@@ -16,9 +16,6 @@ const anthropic = demoConfig.hasAnthropicKey
       temperature: 0.45,
       maxTokens: 220,
       maxRetries: 2,
-      outputConfig: {
-        effort: "low",
-      },
     })
   : null;
 
@@ -91,6 +88,7 @@ export async function humanizeReply(
 - Se o nome da pessoa estiver disponível, use só o primeiro nome quando soar natural.
 - Nunca cumprimente de novo depois da primeira mensagem da conversa.
 - Prefira respostas curtas, humanas e diretas. Máximo 2-3 frases por mensagem.
+- Evite emojis, excesso de entusiasmo e tom publicitário.
 - Evite frases costuradas ou duplicadas, como "Beleza, Ana. boa..." ou "Certo, Ana. perfeito...".
 - Quando mencionar o nome da pessoa, encaixe em uma única abertura natural e siga a frase normalmente.
 - Se a resposta-base tiver uma lista numerada de horários, mantenha a numeração, as datas, os horários e as quebras de linha.
@@ -114,7 +112,7 @@ export async function humanizeReply(
 </example>
 <example>
 <draft>Prontinho, Ana! Sua consulta com Dra. Stefania para Limpeza está confirmada em segunda, 10 de março, às 14:00. Chegue com uns 10 min de antecedência. Se precisar remarcar, é só chamar aqui.</draft>
-<output>Perfeito, Ana! Sua consulta com a Dra. Stefania em seg., 10 de março, às 14:00 está confirmada. Chegue com uns 10 min de antecedência 😊</output>
+<output>Perfeito, Ana. Sua consulta com a Dra. Stefania em seg., 10 de março, às 14:00 está confirmada. Chegue com uns 10 min de antecedência.</output>
 </example>
 <example>
 <draft>Entendi, procurando para amanhã. Separei estas opções para Atendimento de emergência:</draft>

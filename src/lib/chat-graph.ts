@@ -27,7 +27,7 @@ import {
   isFamilyBookingRequest,
   matchSlotChoice,
   normalize,
-  parsePreference,
+  ParsedPreference,
   parsePreferredDoctor,
   resetRequested,
 } from "@/lib/chat-domain";
@@ -82,6 +82,30 @@ const suggestedSlotSchema = z.object({
   serviceId: serviceIdSchema,
   serviceName: z.string(),
 });
+const periodSchema = z.enum(["morning", "afternoon", "evening"]);
+const approximateTimeWindowSchema = z.object({
+  start: z.string(),
+  end: z.string(),
+  label: z.string(),
+});
+const weekdayOccurrenceSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+  z.literal("last"),
+]);
+const parsedPreferenceSchema = z.object({
+  date: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  weekday: z.number().int().min(0).max(6).optional(),
+  weekdayOccurrence: weekdayOccurrenceSchema.optional(),
+  exactTime: z.string().optional(),
+  period: periodSchema.optional(),
+  timeWindow: approximateTimeWindowSchema.optional(),
+  weekendRequested: z.boolean().optional(),
+});
 
 const chatMessageListValue = new ReducedValue(
   z.array(chatMessageSchema).default(() => []),
@@ -96,8 +120,6 @@ const chatMessageListValue = new ReducedValue(
     },
   },
 );
-
-const periodSchema = z.enum(["morning", "afternoon", "evening"]);
 
 const ChatTurnState = new StateSchema({
   sessionId: z.string(),
@@ -124,6 +146,7 @@ const ChatTurnState = new StateSchema({
     z.number().int().min(1).max(4).optional(),
   ),
   isUrgent: new UntrackedValue(z.boolean().optional()),
+  parsedPreference: new UntrackedValue(parsedPreferenceSchema.optional()),
   replyDraft: new UntrackedValue(z.string().optional()),
 });
 
@@ -135,8 +158,8 @@ function isStuckMessage(stuckTurnCount: number): boolean {
 
 function applySessionPreferences(
   state: ChatGraphState,
-  preference: ReturnType<typeof parsePreference>,
-): ReturnType<typeof parsePreference> {
+  preference: ParsedPreference,
+): ParsedPreference {
   const withContext = applyPreferenceContext(state, preference);
 
   // If no explicit period was requested and we have a preferred period, apply it
@@ -149,8 +172,8 @@ function applySessionPreferences(
 
 function applyPreferenceContext(
   state: ChatGraphState,
-  preference: ReturnType<typeof parsePreference>,
-): ReturnType<typeof parsePreference> {
+  preference: ParsedPreference,
+): ParsedPreference {
   if (
     preference.date ||
     preference.startDate ||
@@ -242,6 +265,7 @@ function createResetState(state: ChatGraphState) {
     shouldReuseContextDate: undefined,
     selectedOptionNumber: undefined,
     isUrgent: undefined,
+    parsedPreference: undefined,
     replyDraft: undefined,
   };
 }
@@ -262,6 +286,7 @@ const ingestUserTurn: typeof ChatTurnState.Node = async (state) => {
     shouldReuseContextDate: analysis.shouldReuseContextDate,
     selectedOptionNumber: analysis.selectedOptionNumber,
     isUrgent: analysis.isUrgent,
+    parsedPreference: analysis.parsedPreference,
   };
 };
 
@@ -341,6 +366,7 @@ const handleNameNode: typeof ChatTurnState.Node = (state) => {
 const handlePreferenceNode: typeof ChatTurnState.Node = (state) => {
   const latestUserText = state.latestUserText ?? "";
   const intent = state.intent as ChatIntent | undefined;
+  const parsedPreference = state.parsedPreference as ParsedPreference | undefined;
 
   if (!state.recommendation) {
     return {
@@ -375,7 +401,7 @@ const handlePreferenceNode: typeof ChatTurnState.Node = (state) => {
 
   const slotResult = buildSlotOptions(
     state.recommendation as ChatRecommendation,
-    applySessionPreferences(state, parsePreference(latestUserText)),
+    applySessionPreferences(state, parsedPreference ?? {}),
   );
 
   const acknowledgment =
@@ -400,6 +426,7 @@ const handleSlotChoiceNode: typeof ChatTurnState.Node = (state) => {
   const intent = state.intent as ChatIntent | undefined;
   const scheduleFit = state.scheduleFit as ScheduleFit | undefined;
   const isUrgent = state.isUrgent ?? false;
+  const parsedPreference = state.parsedPreference as ParsedPreference | undefined;
 
   if (!state.recommendation) {
     return {
@@ -454,7 +481,7 @@ const handleSlotChoiceNode: typeof ChatTurnState.Node = (state) => {
   ) {
     const requestedPreference = applySessionPreferences(
       state,
-      parsePreference(latestUserText),
+      parsedPreference ?? {},
     );
     const updatedSlotResult = buildSlotOptions(
       state.recommendation as ChatRecommendation,
@@ -484,12 +511,12 @@ const handleSlotChoiceNode: typeof ChatTurnState.Node = (state) => {
 };
 
 const handleConfirmationNode: typeof ChatTurnState.Node = (state) => {
-  const latestUserText = state.latestUserText ?? "";
   const intent = state.intent as ChatIntent | undefined;
   const scheduleFit = state.scheduleFit as ScheduleFit | undefined;
+  const parsedPreference = state.parsedPreference as ParsedPreference | undefined;
   const requestedPreference = applySessionPreferences(
     state,
-    parsePreference(latestUserText),
+    parsedPreference ?? {},
   );
 
   if (
@@ -668,6 +695,7 @@ const appendAssistantMessageNode: typeof ChatTurnState.Node = (state) => {
     shouldReuseContextDate: undefined,
     selectedOptionNumber: undefined,
     isUrgent: undefined,
+    parsedPreference: undefined,
     replyDraft: undefined,
   };
 };

@@ -6,6 +6,13 @@ import {
   processChatTurn,
 } from "@/lib/chat-assistant";
 import {
+  getDailyDemoBudgetStatus,
+  getDailyDemoBudgetMessage,
+  previewDailyDemoBudget,
+  recordBlockedDailyDemoRequest,
+  recordDailyDemoBudgetUsage,
+} from "@/lib/demo-budget";
+import {
   createChatSession,
   deleteChatSession,
   getChatSession,
@@ -21,6 +28,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     ...toChatResponse(session, getQuickRepliesForSession(session)),
     summary: await buildSessionSummary(session),
+    demoBudget: getDailyDemoBudgetStatus(),
   });
 }
 
@@ -41,12 +49,27 @@ export async function POST(request: NextRequest) {
     (body.sessionId ? getChatSession(body.sessionId) : undefined) ??
     createChatSession(createInitialChatSession());
 
+  const budgetPreview = previewDailyDemoBudget(session, body.message);
+  if (!budgetPreview.allowed) {
+    recordBlockedDailyDemoRequest();
+
+    return NextResponse.json(
+      {
+        error: getDailyDemoBudgetMessage(),
+        demoBudget: getDailyDemoBudgetStatus(),
+      },
+      { status: 429 },
+    );
+  }
+
   const result = await processChatTurn(session, body.message);
+  recordDailyDemoBudgetUsage(budgetPreview.estimate);
   saveChatSession(result.session);
 
   return NextResponse.json({
     ...toChatResponse(result.session, result.quickReplies),
     summary: await buildSessionSummary(result.session),
+    demoBudget: getDailyDemoBudgetStatus(),
   });
 }
 
@@ -62,5 +85,6 @@ export function DELETE(request: NextRequest) {
   return NextResponse.json({
     ...toChatResponse(session, getQuickRepliesForSession(session)),
     summary: "Conversa reiniciada.",
+    demoBudget: getDailyDemoBudgetStatus(),
   });
 }

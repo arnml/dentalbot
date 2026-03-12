@@ -19,14 +19,20 @@ import {
   getFirstName,
   getQuickRepliesForSession,
   guessRecommendation,
+  hasParsedPreferenceSignal,
   isCancellation,
   matchSlotChoice,
   normalize,
   parsePreference,
   parsePreferredDoctor,
+  ParsedPreference,
   resetRequested,
 } from "@/lib/chat-domain";
 import { isOffTopicQuestion } from "@/lib/chat-intent";
+import {
+  resolveScheduleUnderstanding,
+  ScheduleInterpretation,
+} from "@/lib/chat-schedule-understanding";
 import {
   ChatRecommendation,
   ChatSession,
@@ -92,7 +98,8 @@ interface AgentScratchpadEntry {
 interface UserTurnHeuristics {
   extractedName?: string;
   preferredDoctorId?: DoctorId;
-  parsedPreference: ReturnType<typeof parsePreference>;
+  parsedPreference: ParsedPreference;
+  scheduleInterpretation?: ScheduleInterpretation;
   matchedSlot?: SuggestedSlot;
   matchedSlotOptionNumber?: number;
   hasCareRequest: boolean;
@@ -109,12 +116,9 @@ const agentPlanner = demoConfig.hasAnthropicKey
   ? new ChatAnthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
       model: demoConfig.anthropicModel,
-      temperature: 0.25,
+      temperature: 0,
       maxTokens: 420,
       maxRetries: 2,
-      outputConfig: {
-        effort: "low",
-      },
     }).withStructuredOutput(agentDecisionSchema, {
       method: "jsonSchema",
     })
@@ -187,19 +191,13 @@ function isNewBookingRequest(text: string): boolean {
   ].some((term) => normalizedText.includes(term));
 }
 
-function looksLikeAvailabilityQuestion(text: string): boolean {
+function looksLikeAvailabilityQuestion(
+  text: string,
+  preference: ParsedPreference = parsePreference(text),
+): boolean {
   const normalizedText = normalize(text);
-  const preference = parsePreference(text);
-  const hasScheduleSignal =
-    Boolean(preference.date) ||
-    Boolean(preference.startDate) ||
-    Boolean(preference.endDate) ||
-    preference.weekday !== undefined ||
-    Boolean(preference.exactTime) ||
-    Boolean(preference.period) ||
-    Boolean(preference.timeWindow);
 
-  if (!hasScheduleSignal) {
+  if (!hasParsedPreferenceSignal(preference)) {
     return false;
   }
 
@@ -254,11 +252,36 @@ function hasExplicitCareRequest(text: string): boolean {
   ].some((term) => normalizedText.includes(term));
 }
 
+function hasUrgencySignal(text?: string): boolean {
+  if (!text) {
+    return false;
+  }
+
+  const normalizedText = normalize(text);
+  return [
+    "dor",
+    "urgencia",
+    "urgente",
+    "emergencia",
+    "inchado",
+    "inchaco",
+    "nao aguento",
+    "infeccao",
+    "inflamacao",
+    "quebrado",
+    "lascou",
+  ].some((term) => normalizedText.includes(term));
+}
+
 function resolveMatchedSlot(
   session: ChatSession,
   userText: string,
+  preference: ParsedPreference,
 ): Pick<UserTurnHeuristics, "matchedSlot" | "matchedSlotOptionNumber"> {
-  if (session.offeredSlots.length === 0 || looksLikeAvailabilityQuestion(userText)) {
+  if (
+    session.offeredSlots.length === 0 ||
+    looksLikeAvailabilityQuestion(userText, preference)
+  ) {
     return {};
   }
 
@@ -288,15 +311,21 @@ function resolveMatchedSlot(
   };
 }
 
-function analyzeUserTurn(
+async function analyzeUserTurn(
   session: ChatSession,
   userText: string,
-): UserTurnHeuristics {
+): Promise<UserTurnHeuristics> {
+  const scheduleInterpretation = await resolveScheduleUnderstanding(
+    session,
+    userText,
+  );
+
   return {
     extractedName: extractName(userText, !session.patientName),
     preferredDoctorId: parsePreferredDoctor(userText),
-    parsedPreference: parsePreference(userText),
-    ...resolveMatchedSlot(session, userText),
+    parsedPreference: scheduleInterpretation.preference,
+    scheduleInterpretation,
+    ...resolveMatchedSlot(session, userText, scheduleInterpretation.preference),
     hasCareRequest: hasExplicitCareRequest(userText),
     offTopicQuestion: isOffTopicQuestion(userText),
     doctorChangeRequested: detectDoctorChangeRequest(userText),
@@ -315,7 +344,7 @@ function applyHeuristicsToSession(
   if (
     heuristics.hasCareRequest &&
     !heuristics.offTopicQuestion &&
-    !looksLikeAvailabilityQuestion(userText)
+    !looksLikeAvailabilityQuestion(userText, heuristics.parsedPreference)
   ) {
     session.symptoms = userText.trim();
   }
@@ -335,6 +364,55 @@ function applyHeuristicsToSession(
   if (heuristics.parsedPreference.period) {
     session.preferredPeriod = heuristics.parsedPreference.period;
   }
+}
+
+function shouldPreemptivelyLookupAvailability(
+  session: ChatSession,
+  heuristics: UserTurnHeuristics,
+): boolean {
+  if (!heuristics.scheduleInterpretation) {
+    return false;
+  }
+
+  if (heuristics.matchedSlot) {
+    return false;
+  }
+
+  if (heuristics.scheduleInterpretation.intent !== "schedule_request") {
+    return false;
+  }
+
+  const hasLookupPreference =
+    hasParsedPreferenceSignal(heuristics.parsedPreference) ||
+    heuristics.scheduleInterpretation.requestKind === "first_available";
+
+  if (!hasLookupPreference) {
+    return false;
+  }
+
+  if (!session.patientName && !heuristics.extractedName) {
+    return false;
+  }
+
+  return Boolean(
+    session.recommendation ||
+      session.symptoms ||
+      heuristics.hasCareRequest ||
+      heuristics.preferredDoctorId,
+  );
+}
+
+function shouldPreemptivelyLookupUrgentIntake(
+  previousSession: ChatSession,
+  session: ChatSession,
+): boolean {
+  return (
+    !previousSession.patientName &&
+    Boolean(session.patientName) &&
+    !session.offeredSlots.length &&
+    !session.selectedSlot &&
+    hasUrgencySignal(session.symptoms)
+  );
 }
 
 function applySessionPatch(
@@ -460,8 +538,8 @@ function getReusableContextDate(session: ChatSession): string | undefined {
 
 function applyPreferenceContext(
   session: ChatSession,
-  preference: ReturnType<typeof parsePreference>,
-): ReturnType<typeof parsePreference> {
+  preference: ParsedPreference,
+): ParsedPreference {
   if (preference.date || preference.startDate || preference.endDate) {
     return preference;
   }
@@ -536,12 +614,12 @@ function buildRecommendationToolResult(
   };
 }
 
-function buildAvailabilityToolResult(
+async function buildAvailabilityToolResult(
   session: ChatSession,
   input: AgentToolInput,
   userText: string,
   heuristics: UserTurnHeuristics,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const recommendation = resolveRecommendation(session, input, userText, heuristics);
 
   if (!recommendation) {
@@ -559,7 +637,11 @@ function buildAvailabilityToolResult(
     typeof input.preferenceText === "string" && input.preferenceText.trim()
       ? input.preferenceText
       : userText;
-  const parsedPreference = parsePreference(rawPreferenceText);
+  const scheduleInterpretation =
+    rawPreferenceText === userText
+      ? heuristics.scheduleInterpretation
+      : await resolveScheduleUnderstanding(session, rawPreferenceText);
+  const parsedPreference = scheduleInterpretation?.preference ?? parsePreference(rawPreferenceText);
   const mergedPreference = applyPreferenceContext(session, {
     ...parsedPreference,
     date: input.date ?? parsedPreference.date,
@@ -694,13 +776,13 @@ function buildBookingToolResult(
   };
 }
 
-function executeTool(
+async function executeTool(
   toolName: AgentToolName,
   session: ChatSession,
   input: AgentToolInput,
   userText: string,
   heuristics: UserTurnHeuristics,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   switch (toolName) {
     case "list_doctors":
       return buildDoctorsToolResult();
@@ -791,8 +873,16 @@ function buildAgentSystemPrompt(): string {
 - Não peça o nome cedo demais. Só peça quando realmente ajudar a concluir a reserva, a menos que a pessoa já tenha informado.
 - Pode responder perguntas paralelas rapidamente e depois retomar o agendamento sem perder o contexto.
 - Se a pessoa mudar de ideia, trocar de médico, perguntar valores ou voltar para a agenda, acompanhe naturalmente.
+- Evite emojis, firulas e tom publicitário. Soe como uma recepcionista humana, calma e objetiva.
+- Não repita perguntas que a pessoa já respondeu.
+- Se já houver informação clínica suficiente para recomendar a consulta, não peça mais detalhes antes de avançar para nome ou agenda.
+- Se já houver nome e contexto suficiente para buscar agenda, prefira oferecer horários concretos em vez de continuar investigando.
+- Em casos de dor ou urgência, priorize encaixe rápido. Se fizer sentido, ofereça primeiro os horários mais próximos.
+- Se já houver slots mostrados e a pessoa pedir outro dia, outra semana, outro período ou uma nova faixa de horário, faça nova busca com lookup_availability em vez de só repetir a lista atual.
+- Se a pessoa pedir "essa semana" ou "semana que vem", responda com datas dentro desse intervalo, não apenas com os slots que já estavam em foco.
+- Em agendamentos para filho, filha ou outra pessoa, deixe claro de quem é o nome que você precisa: do responsável ou do paciente.
 - Se a pessoa disser algo como "quase meio-dia" ou "casi al mediodía", trate isso como uma faixa de horário, não como hora exata.
-- Se a pessoa disser algo como "este viernes", "este este este viernes", "primeira sexta do próximo mês" ou "próximo mês", trate isso como referência natural de data e período, sem exigir formato rígido.
+- Se a pessoa disser algo como "este viernes", "este este este viernes", "primeira sexta do próximo mês", "próximo mês", "essa semana" ou "semana que vem", trate isso como referência natural de data e período, sem exigir formato rígido.
 - Nunca invente agenda. Nunca confirme booking sem usar book_appointment com sucesso.
 - Se já houver slots oferecidos e a pessoa escolher um deles, você pode confirmar o slot em linguagem natural antes de reservar.
 - Respostas finais ao paciente devem ser curtas, naturais e em português do Brasil.
@@ -881,9 +971,49 @@ export async function processChatTurnWithAgent(
   }
 
   const workingSession = cloneSession(session);
-  const heuristics = analyzeUserTurn(workingSession, trimmed);
+  const heuristics = await analyzeUserTurn(workingSession, trimmed);
   applyHeuristicsToSession(workingSession, trimmed, heuristics);
   syncSessionStage(workingSession);
+
+  if (shouldPreemptivelyLookupUrgentIntake(session, workingSession)) {
+    const lookupResult = await buildAvailabilityToolResult(
+      workingSession,
+      {},
+      trimmed,
+      heuristics,
+    );
+
+    workingSession.messages.push(createMessage("user", trimmed));
+    workingSession.messages.push(
+      createMessage("assistant", lookupResult.fallbackReply),
+    );
+    workingSession.stage = deriveSessionStage(workingSession);
+
+    return {
+      session: workingSession,
+      quickReplies: getQuickRepliesForSession(workingSession),
+    };
+  }
+
+  if (shouldPreemptivelyLookupAvailability(workingSession, heuristics)) {
+    const lookupResult = await buildAvailabilityToolResult(
+      workingSession,
+      {},
+      trimmed,
+      heuristics,
+    );
+
+    workingSession.messages.push(createMessage("user", trimmed));
+    workingSession.messages.push(
+      createMessage("assistant", lookupResult.fallbackReply),
+    );
+    workingSession.stage = deriveSessionStage(workingSession);
+
+    return {
+      session: workingSession,
+      quickReplies: getQuickRepliesForSession(workingSession),
+    };
+  }
 
   const scratchpad: AgentScratchpadEntry[] = [];
   const executedTools = new Set<string>();
@@ -917,7 +1047,7 @@ export async function processChatTurnWithAgent(
 
     executedTools.add(signature);
 
-    const toolResult = executeTool(
+    const toolResult = await executeTool(
       toolName,
       workingSession,
       toolInput,

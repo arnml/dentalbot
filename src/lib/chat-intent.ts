@@ -7,14 +7,20 @@ import {
   extractName,
   extractSlotChoiceNumber,
   formatSlot,
+  hasParsedPreferenceSignal,
   isCancellation,
   isNegative,
   isPositive,
   matchSlotChoice,
   normalize,
   parsePreference,
+  ParsedPreference,
   resetRequested,
 } from "@/lib/chat-domain";
+import {
+  resolveScheduleUnderstanding,
+  ScheduleInterpretation,
+} from "@/lib/chat-schedule-understanding";
 import { ChatSession } from "@/lib/types";
 
 export const chatIntentValues = [
@@ -50,6 +56,7 @@ export interface ChatTurnAnalysis {
   shouldReuseContextDate: boolean;
   selectedOptionNumber?: number;
   isUrgent?: boolean;
+  parsedPreference: ParsedPreference;
 }
 
 const turnAnalysisSchema = z.object({
@@ -73,9 +80,6 @@ const classifierModel = demoConfig.hasAnthropicKey
       temperature: 0,
       maxTokens: 220,
       maxRetries: 2,
-      outputConfig: {
-        effort: "low",
-      },
     }).withStructuredOutput(turnAnalysisSchema, {
       method: "jsonSchema",
     })
@@ -88,9 +92,6 @@ const slotSelectionModel = demoConfig.hasAnthropicKey
       temperature: 0,
       maxTokens: 160,
       maxRetries: 2,
-      outputConfig: {
-        effort: "low",
-      },
     }).withStructuredOutput(slotSelectionSchema, {
       method: "jsonSchema",
     })
@@ -131,19 +132,13 @@ function getReusableContextDate(session: ChatSession): string | undefined {
   return uniqueDates.length === 1 ? uniqueDates[0] : undefined;
 }
 
-function isAvailabilityQuestion(text: string): boolean {
+function isAvailabilityQuestion(
+  text: string,
+  preference: ParsedPreference = parsePreference(text),
+): boolean {
   const normalizedText = normalize(text);
-  const preference = parsePreference(text);
-  const hasScheduleSignal =
-    Boolean(preference.date) ||
-    Boolean(preference.startDate) ||
-    Boolean(preference.endDate) ||
-    preference.weekday !== undefined ||
-    Boolean(preference.exactTime) ||
-    Boolean(preference.period) ||
-    Boolean(preference.timeWindow);
 
-  if (!hasScheduleSignal) {
+  if (!hasParsedPreferenceSignal(preference)) {
     return false;
   }
 
@@ -165,24 +160,30 @@ function isAvailabilityQuestion(text: string): boolean {
   );
 }
 
-function isBroadScheduleRequest(text: string): boolean {
+function isBroadScheduleRequest(
+  text: string,
+  scheduleInterpretation?: ScheduleInterpretation,
+): boolean {
   const normalizedText = normalize(text);
 
-  return [
-    "qualquer horario",
-    "qualquer horário",
-    "qualquer um",
-    "o primeiro disponivel",
-    "o primeiro disponível",
-    "primeiro horario",
-    "primeiro horário",
-    "o que tiver",
-    "tanto faz",
-    "o proximo horario",
-    "o próximo horário",
-    "o proximo disponivel",
-    "o próximo disponível",
-  ].some((term) => normalizedText.includes(term));
+  return (
+    scheduleInterpretation?.requestKind === "first_available" ||
+    [
+      "qualquer horario",
+      "qualquer horário",
+      "qualquer um",
+      "o primeiro disponivel",
+      "o primeiro disponível",
+      "primeiro horario",
+      "primeiro horário",
+      "o que tiver",
+      "tanto faz",
+      "o proximo horario",
+      "o próximo horário",
+      "o proximo disponivel",
+      "o próximo disponível",
+    ].some((term) => normalizedText.includes(term))
+  );
 }
 
 function detectUrgency(text: string): boolean {
@@ -402,6 +403,7 @@ function inferScheduleFit(
   session: ChatSession,
   intent: ChatIntent,
   userText: string,
+  preference: ParsedPreference = parsePreference(userText),
 ): ScheduleFit {
   if (intent === "slot_selection") {
     return "matches_listed_option";
@@ -421,17 +423,7 @@ function inferScheduleFit(
     return "not_applicable";
   }
 
-  const preference = parsePreference(userText);
-  const hasExplicitSchedule =
-    Boolean(preference.date) ||
-    Boolean(preference.startDate) ||
-    Boolean(preference.endDate) ||
-    preference.weekday !== undefined ||
-    Boolean(preference.exactTime) ||
-    Boolean(preference.period) ||
-    Boolean(preference.timeWindow);
-
-  if (!hasExplicitSchedule) {
+  if (!hasParsedPreferenceSignal(preference)) {
     return "new_lookup";
   }
 
@@ -444,7 +436,7 @@ function inferScheduleFit(
     (Boolean(preference.exactTime) ||
       Boolean(preference.period) ||
       Boolean(preference.timeWindow) ||
-      isAvailabilityQuestion(userText));
+      isAvailabilityQuestion(userText, preference));
 
   return canReuseContextDate ? "contextual_lookup" : "new_lookup";
 }
@@ -454,8 +446,14 @@ function stabilizeIntent(
   intent: ChatIntent,
   userText: string,
   selectedOptionNumber?: number,
+  preference: ParsedPreference = parsePreference(userText),
+  scheduleInterpretation?: ScheduleInterpretation,
 ): ChatIntent {
-  if (isAvailabilityQuestion(userText)) {
+  if (
+    isAvailabilityQuestion(userText, preference) ||
+    isBroadScheduleRequest(userText, scheduleInterpretation) ||
+    scheduleInterpretation?.intent === "schedule_request"
+  ) {
     return "schedule_request";
   }
 
@@ -470,7 +468,12 @@ function stabilizeIntent(
   return intent;
 }
 
-function fallbackIntent(session: ChatSession, userText: string): ChatIntent {
+function fallbackIntent(
+  session: ChatSession,
+  userText: string,
+  preference: ParsedPreference = parsePreference(userText),
+  scheduleInterpretation?: ScheduleInterpretation,
+): ChatIntent {
   if (resetRequested(userText)) {
     return "restart";
   }
@@ -491,16 +494,10 @@ function fallbackIntent(session: ChatSession, userText: string): ChatIntent {
     return "slot_selection";
   }
 
-  const parsedPreference = parsePreference(userText);
   if (
-    parsedPreference.date ||
-    parsedPreference.startDate ||
-    parsedPreference.endDate ||
-    parsedPreference.weekday !== undefined ||
-    parsedPreference.exactTime ||
-    parsedPreference.period ||
-    parsedPreference.timeWindow ||
-    isBroadScheduleRequest(userText)
+    hasParsedPreferenceSignal(preference) ||
+    isBroadScheduleRequest(userText, scheduleInterpretation) ||
+    scheduleInterpretation?.intent === "schedule_request"
   ) {
     return "schedule_request";
   }
@@ -527,15 +524,19 @@ function fallbackIntent(session: ChatSession, userText: string): ChatIntent {
 function fallbackAnalysis(
   session: ChatSession,
   userText: string,
+  preference: ParsedPreference = parsePreference(userText),
+  scheduleInterpretation?: ScheduleInterpretation,
 ): ChatTurnAnalysis {
   const selectedOptionNumber = getSelectedOptionFallback(session, userText);
   const intent = stabilizeIntent(
     session,
-    fallbackIntent(session, userText),
+    fallbackIntent(session, userText, preference, scheduleInterpretation),
     userText,
     selectedOptionNumber,
+    preference,
+    scheduleInterpretation,
   );
-  const scheduleFit = inferScheduleFit(session, intent, userText);
+  const scheduleFit = inferScheduleFit(session, intent, userText, preference);
 
   return {
     intent,
@@ -545,6 +546,7 @@ function fallbackAnalysis(
       Boolean(getReusableContextDate(session)),
     selectedOptionNumber,
     isUrgent: detectUrgency(userText),
+    parsedPreference: preference,
   };
 }
 
@@ -553,32 +555,42 @@ function stabilizeAnalysis(
   result: z.infer<typeof turnAnalysisSchema>,
   userText: string,
   llmSelectedOptionNumber?: number,
+  preference: ParsedPreference = parsePreference(userText),
+  scheduleInterpretation?: ScheduleInterpretation,
 ): ChatTurnAnalysis {
-  const fallback = fallbackAnalysis(session, userText);
+  const fallback = fallbackAnalysis(
+    session,
+    userText,
+    preference,
+    scheduleInterpretation,
+  );
   const selectedOptionNumber =
     llmSelectedOptionNumber ??
     result.selectedOptionNumber ??
     getSelectedOptionFallback(session, userText) ??
     fallback.selectedOptionNumber;
+  const baseIntent = result.intent === "unclear" ? fallback.intent : result.intent;
   const intent = stabilizeIntent(
     session,
-    result.intent,
+    baseIntent,
     userText,
     selectedOptionNumber,
+    preference,
+    scheduleInterpretation,
   );
 
   const scheduleFit =
     selectedOptionNumber && session.offeredSlots[selectedOptionNumber - 1]
       ? "matches_listed_option"
       : intent !== result.intent
-      ? inferScheduleFit(session, intent, userText)
+      ? inferScheduleFit(session, intent, userText, preference)
       : result.scheduleFit;
 
   const shouldReuseContextDate =
-    !parsePreference(userText).date &&
-    !parsePreference(userText).startDate &&
-    !parsePreference(userText).endDate &&
-    parsePreference(userText).weekday === undefined &&
+    !preference.date &&
+    !preference.startDate &&
+    !preference.endDate &&
+    preference.weekday === undefined &&
     Boolean(getReusableContextDate(session)) &&
     (result.shouldReuseContextDate || scheduleFit === "contextual_lookup");
 
@@ -588,6 +600,7 @@ function stabilizeAnalysis(
     shouldReuseContextDate,
     selectedOptionNumber,
     isUrgent: detectUrgency(userText),
+    parsedPreference: preference,
   };
 }
 
@@ -595,8 +608,19 @@ export async function analyzeChatTurn(
   session: ChatSession,
   userText: string,
 ): Promise<ChatTurnAnalysis> {
+  const scheduleInterpretationPromise = resolveScheduleUnderstanding(
+    session,
+    userText,
+  );
+
   if (!classifierModel) {
-    return fallbackAnalysis(session, userText);
+    const scheduleInterpretation = await scheduleInterpretationPromise;
+    return fallbackAnalysis(
+      session,
+      userText,
+      scheduleInterpretation.preference,
+      scheduleInterpretation,
+    );
   }
 
   const systemPrompt = `
@@ -734,23 +758,31 @@ ${formatAvailableSlots(session)}
   `.trim();
 
   try {
-    const llmSelectedOptionNumber = await resolveSelectedOptionWithLlm(
-      session,
-      userText,
-    );
-    const result = await classifierModel.invoke([
-      new SystemMessage(systemPrompt),
-      new HumanMessage(userPrompt),
-    ]);
-
+    const [llmSelectedOptionNumber, scheduleInterpretation, result] =
+      await Promise.all([
+        resolveSelectedOptionWithLlm(session, userText),
+        scheduleInterpretationPromise,
+        classifierModel.invoke([
+          new SystemMessage(systemPrompt),
+          new HumanMessage(userPrompt),
+        ]),
+      ]);
     return stabilizeAnalysis(
       session,
       result,
       userText,
       llmSelectedOptionNumber,
+      scheduleInterpretation.preference,
+      scheduleInterpretation,
     );
   } catch {
-    return fallbackAnalysis(session, userText);
+    const scheduleInterpretation = await scheduleInterpretationPromise;
+    return fallbackAnalysis(
+      session,
+      userText,
+      scheduleInterpretation.preference,
+      scheduleInterpretation,
+    );
   }
 }
 

@@ -155,6 +155,17 @@ export interface ChatSession {
   familyContext?: string;
 }
 
+export interface DemoBudgetStatus {
+  enabled: boolean;
+  exhausted: boolean;
+  dailyBudgetUsd: number;
+  usedUsd: number;
+  remainingUsd: number;
+  usagePercent: number;
+  requests: number;
+  blockedRequests: number;
+}
+
 export interface ChatResponse {
   sessionId: string;
   messages: ChatMessage[];
@@ -163,6 +174,7 @@ export interface ChatResponse {
   recommendation?: ChatRecommendation;
   offeredSlots: SuggestedSlot[];
   selectedSlot?: SuggestedSlot;
+  demoBudget?: DemoBudgetStatus;
 }
 
 export interface KnowledgeDocument {

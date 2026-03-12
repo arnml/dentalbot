@@ -43,6 +43,14 @@ function normalizeNameToken(token: string): string {
 function cleanExtractedName(rawName: string): string | undefined {
   const stopTokens = new Set([
     "e",
+    "oi",
+    "ola",
+    "olá",
+    "bom",
+    "boa",
+    "dia",
+    "tarde",
+    "noite",
     "estou",
     "to",
     "tô",
@@ -389,16 +397,35 @@ export function containsClinicalContext(text: string): boolean {
 }
 
 export type Period = "morning" | "afternoon" | "evening";
+export type WeekdayOccurrence = 1 | 2 | 3 | 4 | "last";
+export type ApproximateTimeWindowKey =
+  | "near_noon"
+  | "midday"
+  | "late_morning"
+  | "early_afternoon"
+  | "after_lunch";
+
+export interface ApproximateTimeWindow {
+  start: string;
+  end: string;
+  label: string;
+}
+
+export interface ParsedPreference {
+  date?: string;
+  startDate?: string;
+  endDate?: string;
+  weekday?: number;
+  weekdayOccurrence?: WeekdayOccurrence;
+  exactTime?: string;
+  period?: Period;
+  timeWindow?: ApproximateTimeWindow;
+  weekendRequested?: boolean;
+}
 
 interface SlotSuggestionResult {
   slots: SuggestedSlot[];
   note?: string;
-}
-
-interface ApproximateTimeWindow {
-  start: string;
-  end: string;
-  label: string;
 }
 
 interface PreferenceMonthWindow {
@@ -406,80 +433,154 @@ interface PreferenceMonthWindow {
   endDate: string;
 }
 
-type WeekdayOccurrence = 1 | 2 | 3 | 4 | "last";
+const approximateTimeWindowPresets: Record<
+  ApproximateTimeWindowKey,
+  ApproximateTimeWindow & { terms: string[] }
+> = {
+  near_noon: {
+    start: "11:00",
+    end: "12:30",
+    label: "perto do meio-dia",
+    terms: [
+      "quase meio dia",
+      "quase meio-dia",
+      "casi al mediodia",
+      "antes do almoco",
+      "antes do almoço",
+      "perto do almoco",
+      "perto do almoço",
+    ],
+  },
+  midday: {
+    start: "11:30",
+    end: "13:30",
+    label: "na faixa do meio-dia",
+    terms: [
+      "meio dia",
+      "meio-dia",
+      "mediodia",
+      "hora do almoco",
+      "hora do almoço",
+    ],
+  },
+  late_morning: {
+    start: "10:30",
+    end: "12:30",
+    label: "no fim da manhã",
+    terms: [
+      "fim da manha",
+      "final da manha",
+      "fim de manha",
+      "fim da manhã",
+    ],
+  },
+  early_afternoon: {
+    start: "12:00",
+    end: "14:30",
+    label: "no começo da tarde",
+    terms: [
+      "comeco da tarde",
+      "comeco de tarde",
+      "inicio da tarde",
+      "depois do almoco",
+      "depois do almoço",
+      "logo depois do almoco",
+      "logo depois do almoço",
+    ],
+  },
+  after_lunch: {
+    start: "13:00",
+    end: "15:30",
+    label: "depois de comer",
+    terms: [
+      "depois de comer",
+      "despues de comer",
+      "after lunch",
+      "depois do cafe",
+      "depois do café",
+      "depois de almocar",
+      "depois de almoçar",
+    ],
+  },
+};
+
+export function getApproximateTimeWindowByKey(
+  key?: ApproximateTimeWindowKey | null,
+): ApproximateTimeWindow | undefined {
+  if (!key) {
+    return undefined;
+  }
+
+  const preset = approximateTimeWindowPresets[key];
+  if (!preset) {
+    return undefined;
+  }
+
+  return {
+    start: preset.start,
+    end: preset.end,
+    label: preset.label,
+  };
+}
+
+export function hasParsedPreferenceSignal(preference: ParsedPreference): boolean {
+  return (
+    Boolean(preference.date) ||
+    Boolean(preference.startDate) ||
+    Boolean(preference.endDate) ||
+    preference.weekday !== undefined ||
+    Boolean(preference.exactTime) ||
+    Boolean(preference.period) ||
+    Boolean(preference.timeWindow)
+  );
+}
+
+export function mergeParsedPreferences(
+  ...preferences: Array<Partial<ParsedPreference> | undefined>
+): ParsedPreference {
+  const merged: ParsedPreference = {};
+
+  for (const preference of preferences) {
+    if (!preference) {
+      continue;
+    }
+
+    if (preference.date !== undefined) {
+      merged.date = preference.date;
+    }
+    if (preference.startDate !== undefined) {
+      merged.startDate = preference.startDate;
+    }
+    if (preference.endDate !== undefined) {
+      merged.endDate = preference.endDate;
+    }
+    if (preference.weekday !== undefined) {
+      merged.weekday = preference.weekday;
+    }
+    if (preference.weekdayOccurrence !== undefined) {
+      merged.weekdayOccurrence = preference.weekdayOccurrence;
+    }
+    if (preference.exactTime !== undefined) {
+      merged.exactTime = preference.exactTime;
+    }
+    if (preference.period !== undefined) {
+      merged.period = preference.period;
+    }
+    if (preference.timeWindow !== undefined) {
+      merged.timeWindow = preference.timeWindow;
+    }
+    if (preference.weekendRequested !== undefined) {
+      merged.weekendRequested = preference.weekendRequested;
+    }
+  }
+
+  return merged;
+}
 
 function detectApproximateTimeWindow(
   normalizedText: string,
 ): ApproximateTimeWindow | undefined {
-  const windows: Array<ApproximateTimeWindow & { terms: string[] }> = [
-    {
-      start: "11:00",
-      end: "12:30",
-      label: "perto do meio-dia",
-      terms: [
-        "quase meio dia",
-        "quase meio-dia",
-        "casi al mediodia",
-        "antes do almoco",
-        "antes do almoço",
-        "perto do almoco",
-        "perto do almoço",
-      ],
-    },
-    {
-      start: "11:30",
-      end: "13:30",
-      label: "na faixa do meio-dia",
-      terms: [
-        "meio dia",
-        "meio-dia",
-        "mediodia",
-        "hora do almoco",
-        "hora do almoço",
-      ],
-    },
-    {
-      start: "10:30",
-      end: "12:30",
-      label: "no fim da manhã",
-      terms: [
-        "fim da manha",
-        "final da manha",
-        "fim de manha",
-        "fim da manhã",
-      ],
-    },
-    {
-      start: "12:00",
-      end: "14:30",
-      label: "no começo da tarde",
-      terms: [
-        "comeco da tarde",
-        "comeco de tarde",
-        "inicio da tarde",
-        "depois do almoco",
-        "depois do almoço",
-        "logo depois do almoco",
-        "logo depois do almoço",
-      ],
-    },
-    {
-      start: "13:00",
-      end: "15:30",
-      label: "depois de comer",
-      terms: [
-        "depois de comer",
-        "despues de comer",
-        "after lunch",
-        "depois do cafe",
-        "depois do café",
-        "depois de almocar",
-        "depois de almoçar",
-      ],
-    },
-  ];
-
-  return windows.find((window) =>
+  return Object.values(approximateTimeWindowPresets).find((window) =>
     window.terms.some((term) => normalizedText.includes(term)),
   );
 }
@@ -713,17 +814,7 @@ function nextWeekday(
   return toDateKey(candidate);
 }
 
-export function parsePreference(text: string): {
-  date?: string;
-  startDate?: string;
-  endDate?: string;
-  weekday?: number;
-  weekdayOccurrence?: WeekdayOccurrence;
-  exactTime?: string;
-  period?: Period;
-  timeWindow?: ApproximateTimeWindow;
-  weekendRequested?: boolean;
-} {
+export function parsePreference(text: string): ParsedPreference {
   const normalizedText = compactPreferenceText(normalize(text));
   let date: string | undefined;
   let startDate: string | undefined;
@@ -933,7 +1024,7 @@ function buildFallbackSlots(recommendation: ChatRecommendation): SuggestedSlot[]
 
 export function buildSlotOptions(
   recommendation: ChatRecommendation,
-  preference: ReturnType<typeof parsePreference>,
+  preference: ParsedPreference,
 ): SlotSuggestionResult {
   if (preference.date && preference.exactTime) {
     const exact = findAvailability({
@@ -1014,6 +1105,18 @@ export function buildSlotOptions(
   }
 
   let note: string | undefined;
+
+  if (
+    matchedRequestedPreference &&
+    preference.startDate &&
+    preference.endDate &&
+    !note
+  ) {
+    const uniqueDates = [...new Set(slots.map((slot) => slot.date))];
+    if (uniqueDates.length === 1) {
+      note = `Nesse período, o que tenho disponível é ${formatDateLabel(uniqueDates[0])}.`;
+    }
+  }
 
   if (preference.weekendRequested) {
     note = "Não temos sábado ou domingo, mas separei horários para sexta-feira que é o dia mais próximo!";
