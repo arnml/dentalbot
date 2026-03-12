@@ -10,7 +10,6 @@ interface ChatApiResponse extends ChatResponse {
 export function ChatBookingAssistant() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [quickReplies, setQuickReplies] = useState<string[]>([]);
   const [summary, setSummary] = useState("Carregando conversa...");
   const [input, setInput] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -23,7 +22,6 @@ export function ChatBookingAssistant() {
       .then((payload: ChatApiResponse) => {
         setSessionId(payload.sessionId);
         setMessages(payload.messages);
-        setQuickReplies(payload.quickReplies);
         setSummary(payload.summary);
       })
       .catch(() => {
@@ -38,7 +36,6 @@ export function ChatBookingAssistant() {
   function applyPayload(payload: ChatApiResponse) {
     setSessionId(payload.sessionId);
     setMessages(payload.messages);
-    setQuickReplies(payload.quickReplies);
     setSummary(payload.summary);
   }
 
@@ -129,7 +126,7 @@ export function ChatBookingAssistant() {
                 Aurora Dental Atelier
               </h2>
               <p className="mt-2 text-[13px] leading-6 text-slate-300 md:text-sm">
-                Fala do seu jeito. O assistente entende os sintomas, indica o especialista e fecha o horário.
+                Agendamento dental.
               </p>
             </div>
             <button
@@ -146,12 +143,12 @@ export function ChatBookingAssistant() {
             {summary}
           </div>
 
-          <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="flex flex-col gap-3">
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`max-w-[78%] rounded-sm px-4 py-3 text-[13px] leading-6 md:max-w-[72%] md:text-sm ${
+                  className={`max-w-[78%] rounded-sm px-4 py-1 text-[13px] leading-6 md:max-w-[72%] md:text-sm ${
                     message.role === "assistant"
                       ? "bg-white/[0.05] text-[#f5f5f5]"
                       : "ml-auto bg-[#f5f5f5] text-[#080808]"
@@ -166,31 +163,25 @@ export function ChatBookingAssistant() {
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            {quickReplies.map((reply) => (
+          <form className="mt-4" onSubmit={handleSubmit}>
+            <div className="relative">
+              <textarea
+                className="input-shell min-h-8 resize-none pb-3 text-[13px] leading-6 md:text-sm"
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ex.: Oi, sou a Camila e estou com dor e sensibilidade do lado direito."
+                value={input}
+              />
               <button
-                key={reply}
-                className="secondary-button px-4 py-2 text-[11px]"
-                disabled={isPending}
-                onClick={() => sendMessage(reply)}
-                type="button"
+                type="submit"
+                disabled={isPending || !input.trim()}
+                className="absolute right-3 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-sm bg-[#f5f5f5] text-[#080808] transition duration-150 hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                {reply}
+                <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
+                  <path d="M1 1l10 6-10 6V1z" />
+                </svg>
               </button>
-            ))}
-          </div>
-
-          <form className="mt-4 flex flex-col gap-3" onSubmit={handleSubmit}>
-            <textarea
-              className="input-shell min-h-24 resize-none text-[13px] leading-6 md:text-sm"
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ex.: Oi, sou a Camila e estou com dor e sensibilidade do lado direito."
-              value={input}
-            />
-            <p className="text-[12px] text-slate-400">
-              Enter envia. Shift+Enter quebra linha.
-            </p>
+            </div>
           </form>
 
           {errorMessage ? (

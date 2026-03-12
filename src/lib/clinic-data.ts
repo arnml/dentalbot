@@ -49,6 +49,8 @@ export const doctors: Doctor[] = [
     name: "Dr. Mario Bianchi",
     role: "Dentista líder em reabilitação oral",
     bio: "Mario é focado em reabilitação do sorriso, planejamento de implantes e consultas detalhadas para pacientes adultos que precisam de um plano restaurador claro.",
+    chatBlurb:
+      "Mario é referência em implantes, coroas e reabilitação estética — ideal para restaurar o sorriso com um plano claro.",
     languages: ["Inglês", "Italiano", "Português"],
     specialties: ["Implantes", "Planejamento estético", "Reabilitação restauradora"],
     background:
@@ -91,6 +93,8 @@ export const doctors: Doctor[] = [
     name: "Dr. Stefania Costa",
     role: "Dentista de família e odontopediatria",
     bio: "Stefania cuida de atendimentos preventivos, consultas pediátricas, clareamento dental e encaixes de urgência na mesma semana com uma abordagem direta e acolhedora.",
+    chatBlurb:
+      "Stefania cuida de família, crianças, clareamento e urgências com uma abordagem acolhedora, inclusive para quem tem ansiedade.",
     languages: ["Inglês", "Português", "Espanhol"],
     specialties: ["Odontologia de família", "Odontopediatria", "Clareamento dental"],
     background:

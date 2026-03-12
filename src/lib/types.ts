@@ -25,6 +25,7 @@ export interface Doctor {
   name: string;
   role: string;
   bio: string;
+  chatBlurb: string;
   languages: string[];
   specialties: string[];
   background: string;
@@ -122,6 +123,8 @@ export type ChatStage =
   | "confirmation"
   | "completed";
 
+export type Period = "morning" | "afternoon" | "evening";
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -146,6 +149,10 @@ export interface ChatSession {
   offeredSlots: SuggestedSlot[];
   selectedSlot?: SuggestedSlot;
   messages: ChatMessage[];
+  preferredPeriod?: Period;
+  stuckTurnCount?: number;
+  previousPatientName?: string;
+  familyContext?: string;
 }
 
 export interface ChatResponse {

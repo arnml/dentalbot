@@ -53,6 +53,13 @@ export function overlaps(
   return startA < endB && startB < endA;
 }
 
+export function daysFromToday(dateKey: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = parseDateKey(dateKey);
+  return Math.round((target.getTime() - today.getTime()) / 86_400_000);
+}
+
 export function formatDateLabel(dateKey: string): string {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "short",

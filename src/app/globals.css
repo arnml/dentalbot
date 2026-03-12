@@ -22,12 +22,15 @@ html {
 
 body {
   min-height: 100vh;
-  background: #080808;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(99, 102, 241, 0.22), transparent),
+    radial-gradient(ellipse 50% 30% at 90% 100%, rgba(139, 92, 246, 0.16), transparent),
+    #080808;
   color: var(--ink);
 }
 
 ::selection {
-  background: rgba(228, 0, 43, 0.55);
+  background: rgba(228, 0, 43, 0.75);
   color: #f5f5f5;
 }
 
@@ -44,9 +47,9 @@ body {
 
 @layer components {
   .panel {
-    @apply relative overflow-hidden rounded-2xl border bg-white/[0.03];
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    @apply relative overflow-hidden rounded-2xl border bg-white/[0.07];
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset, 0 24px 60px rgba(0, 0, 0, 0.4);
   }
 
   .pill {
