@@ -389,7 +389,7 @@ interface SlotSuggestionResult {
   note?: string;
 }
 
-function nextWeekday(weekday: number): string {
+function nextWeekday(weekday: number, isNextWeek?: boolean): string {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const candidate = new Date(today);
@@ -399,6 +399,9 @@ function nextWeekday(weekday: number): string {
   }
 
   if (candidate.getTime() === today.getTime()) {
+    candidate.setDate(candidate.getDate() + 7);
+  } else if (isNextWeek) {
+    // Add another week if "proxima" was detected
     candidate.setDate(candidate.getDate() + 7);
   }
 
@@ -526,7 +529,7 @@ export function parsePreference(text: string): {
     }
   }
 
-  return { date, exactTime, period };
+  return { date, exactTime, period, weekendRequested };
 }
 
 function fitsPeriod(slot: SuggestedSlot, period?: Period): boolean {
