@@ -136,8 +136,12 @@ function isAvailabilityQuestion(text: string): boolean {
   const preference = parsePreference(text);
   const hasScheduleSignal =
     Boolean(preference.date) ||
+    Boolean(preference.startDate) ||
+    Boolean(preference.endDate) ||
+    preference.weekday !== undefined ||
     Boolean(preference.exactTime) ||
-    Boolean(preference.period);
+    Boolean(preference.period) ||
+    Boolean(preference.timeWindow);
 
   if (!hasScheduleSignal) {
     return false;
@@ -420,8 +424,12 @@ function inferScheduleFit(
   const preference = parsePreference(userText);
   const hasExplicitSchedule =
     Boolean(preference.date) ||
+    Boolean(preference.startDate) ||
+    Boolean(preference.endDate) ||
+    preference.weekday !== undefined ||
     Boolean(preference.exactTime) ||
-    Boolean(preference.period);
+    Boolean(preference.period) ||
+    Boolean(preference.timeWindow);
 
   if (!hasExplicitSchedule) {
     return "new_lookup";
@@ -429,9 +437,13 @@ function inferScheduleFit(
 
   const canReuseContextDate =
     !preference.date &&
+    !preference.startDate &&
+    !preference.endDate &&
+    preference.weekday === undefined &&
     Boolean(getReusableContextDate(session)) &&
     (Boolean(preference.exactTime) ||
       Boolean(preference.period) ||
+      Boolean(preference.timeWindow) ||
       isAvailabilityQuestion(userText));
 
   return canReuseContextDate ? "contextual_lookup" : "new_lookup";
@@ -482,8 +494,12 @@ function fallbackIntent(session: ChatSession, userText: string): ChatIntent {
   const parsedPreference = parsePreference(userText);
   if (
     parsedPreference.date ||
+    parsedPreference.startDate ||
+    parsedPreference.endDate ||
+    parsedPreference.weekday !== undefined ||
     parsedPreference.exactTime ||
     parsedPreference.period ||
+    parsedPreference.timeWindow ||
     isBroadScheduleRequest(userText)
   ) {
     return "schedule_request";
@@ -560,6 +576,9 @@ function stabilizeAnalysis(
 
   const shouldReuseContextDate =
     !parsePreference(userText).date &&
+    !parsePreference(userText).startDate &&
+    !parsePreference(userText).endDate &&
+    parsePreference(userText).weekday === undefined &&
     Boolean(getReusableContextDate(session)) &&
     (result.shouldReuseContextDate || scheduleFit === "contextual_lookup");
 

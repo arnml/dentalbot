@@ -151,7 +151,12 @@ function applyPreferenceContext(
   state: ChatGraphState,
   preference: ReturnType<typeof parsePreference>,
 ): ReturnType<typeof parsePreference> {
-  if (preference.date) {
+  if (
+    preference.date ||
+    preference.startDate ||
+    preference.endDate ||
+    preference.weekday !== undefined
+  ) {
     return preference;
   }
 

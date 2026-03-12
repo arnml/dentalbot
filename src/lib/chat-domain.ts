@@ -1,6 +1,12 @@
 import { createBooking } from "@/lib/booking-store";
 import { findAvailability, getSuggestedSlots } from "@/lib/availability";
-import { daysFromToday, formatDateLabel, toDateKey } from "@/lib/date";
+import {
+  daysFromToday,
+  formatDateLabel,
+  getWeekday,
+  timeToMinutes,
+  toDateKey,
+} from "@/lib/date";
 import { getDoctorById, getServiceById } from "@/lib/clinic-data";
 import {
   ChatMessage,
@@ -389,7 +395,307 @@ interface SlotSuggestionResult {
   note?: string;
 }
 
-function nextWeekday(weekday: number, isNextWeek?: boolean): string {
+interface ApproximateTimeWindow {
+  start: string;
+  end: string;
+  label: string;
+}
+
+interface PreferenceMonthWindow {
+  startDate: string;
+  endDate: string;
+}
+
+type WeekdayOccurrence = 1 | 2 | 3 | 4 | "last";
+
+function detectApproximateTimeWindow(
+  normalizedText: string,
+): ApproximateTimeWindow | undefined {
+  const windows: Array<ApproximateTimeWindow & { terms: string[] }> = [
+    {
+      start: "11:00",
+      end: "12:30",
+      label: "perto do meio-dia",
+      terms: [
+        "quase meio dia",
+        "quase meio-dia",
+        "casi al mediodia",
+        "antes do almoco",
+        "antes do almoço",
+        "perto do almoco",
+        "perto do almoço",
+      ],
+    },
+    {
+      start: "11:30",
+      end: "13:30",
+      label: "na faixa do meio-dia",
+      terms: [
+        "meio dia",
+        "meio-dia",
+        "mediodia",
+        "hora do almoco",
+        "hora do almoço",
+      ],
+    },
+    {
+      start: "10:30",
+      end: "12:30",
+      label: "no fim da manhã",
+      terms: [
+        "fim da manha",
+        "final da manha",
+        "fim de manha",
+        "fim da manhã",
+      ],
+    },
+    {
+      start: "12:00",
+      end: "14:30",
+      label: "no começo da tarde",
+      terms: [
+        "comeco da tarde",
+        "comeco de tarde",
+        "inicio da tarde",
+        "depois do almoco",
+        "depois do almoço",
+        "logo depois do almoco",
+        "logo depois do almoço",
+      ],
+    },
+    {
+      start: "13:00",
+      end: "15:30",
+      label: "depois de comer",
+      terms: [
+        "depois de comer",
+        "despues de comer",
+        "after lunch",
+        "depois do cafe",
+        "depois do café",
+        "depois de almocar",
+        "depois de almoçar",
+      ],
+    },
+  ];
+
+  return windows.find((window) =>
+    window.terms.some((term) => normalizedText.includes(term)),
+  );
+}
+
+function compactPreferenceText(text: string): string {
+  const tokens = text
+    .replace(/[.,;:!?/()[\]{}]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return tokens
+    .filter((token, index) => index === 0 || token !== tokens[index - 1])
+    .join(" ");
+}
+
+function buildMonthWindow(monthOffset: number): PreferenceMonthWindow {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const start = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
+  const end = new Date(today.getFullYear(), today.getMonth() + monthOffset + 1, 0);
+
+  if (monthOffset === 0 && start < today) {
+    start.setTime(today.getTime());
+  }
+
+  return {
+    startDate: toDateKey(start),
+    endDate: toDateKey(end),
+  };
+}
+
+function clampMonthWindow(
+  window: PreferenceMonthWindow,
+  part: "early" | "mid" | "late",
+): PreferenceMonthWindow {
+  const [year, month] = window.startDate.split("-").map(Number);
+  const monthIndex = month - 1;
+
+  if (part === "early") {
+    return {
+      startDate: window.startDate,
+      endDate: toDateKey(new Date(year, monthIndex, 10)),
+    };
+  }
+
+  if (part === "mid") {
+    return {
+      startDate: toDateKey(new Date(year, monthIndex, 11)),
+      endDate: toDateKey(new Date(year, monthIndex, 20)),
+    };
+  }
+
+  const endDay = Number(window.endDate.slice(-2));
+  return {
+    startDate: toDateKey(new Date(year, monthIndex, Math.max(21, endDay - 9))),
+    endDate: window.endDate,
+  };
+}
+
+function detectMonthQualifier(
+  normalizedText: string,
+): "early" | "mid" | "late" | undefined {
+  if (
+    [
+      "comeco do mes",
+      "comeco de mes",
+      "inicio do mes",
+      "inicio de mes",
+      "principios de mes",
+      "a principios del mes",
+      "principios del proximo mes",
+      "inicio del proximo mes",
+      "start of month",
+    ].some((term) => normalizedText.includes(term))
+  ) {
+    return "early";
+  }
+
+  if (
+    [
+      "meados do mes",
+      "metade do mes",
+      "mediados de mes",
+      "mediados del proximo mes",
+      "middle of month",
+    ].some((term) => normalizedText.includes(term))
+  ) {
+    return "mid";
+  }
+
+  if (
+    [
+      "fim do mes",
+      "fim de mes",
+      "final do mes",
+      "final de mes",
+      "fines del mes",
+      "fin de mes",
+      "fines del proximo mes",
+      "fin del proximo mes",
+      "final do proximo mes",
+      "end of month",
+    ].some((term) => normalizedText.includes(term))
+  ) {
+    return "late";
+  }
+
+  return undefined;
+}
+
+function detectMonthWindow(
+  normalizedText: string,
+): PreferenceMonthWindow | undefined {
+  const monthQualifier = detectMonthQualifier(normalizedText);
+
+  if (
+    [
+      "proximo mes",
+      "mes que vem",
+      "mes que viene",
+      "next month",
+    ].some((term) => normalizedText.includes(term))
+  ) {
+    const window = buildMonthWindow(1);
+    return monthQualifier ? clampMonthWindow(window, monthQualifier) : window;
+  }
+
+  if (
+    ["este mes", "esse mes", "this month"].some((term) =>
+      normalizedText.includes(term),
+    )
+  ) {
+    const window = buildMonthWindow(0);
+    return monthQualifier ? clampMonthWindow(window, monthQualifier) : window;
+  }
+
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchWeekdayPreference(
+  normalizedText: string,
+): { weekday: number; labels: string[]; occurrence?: WeekdayOccurrence } | undefined {
+  const weekdayEntries = [
+    { weekday: 1, labels: ["segunda", "lunes"] },
+    { weekday: 2, labels: ["terca", "martes"] },
+    { weekday: 3, labels: ["quarta", "miercoles"] },
+    { weekday: 4, labels: ["quinta", "jueves"] },
+    { weekday: 5, labels: ["sexta", "viernes"] },
+  ];
+
+  const occurrenceEntries: Array<[WeekdayOccurrence, string[]]> = [
+    ["last", ["ultima", "ultimo", "last", "final"]],
+    [1, ["primeira", "primeiro", "primer", "primera", "first"]],
+    [2, ["segunda", "segundo", "second"]],
+    [3, ["terceira", "terceiro", "tercer", "tercera", "third"]],
+    [4, ["quarta", "quarto", "cuarta", "fourth"]],
+  ];
+
+  for (const weekdayEntry of weekdayEntries) {
+    const labelPattern = weekdayEntry.labels
+      .map((label) => `${escapeRegExp(label)}(?:-feira)?`)
+      .join("|");
+
+    for (const [occurrence, occurrenceTerms] of occurrenceEntries) {
+      const occurrencePattern = occurrenceTerms.map(escapeRegExp).join("|");
+      const regex = new RegExp(
+        `\\b(?:${occurrencePattern})\\s+(?:${labelPattern})\\b`,
+      );
+
+      if (regex.test(normalizedText)) {
+        return {
+          weekday: weekdayEntry.weekday,
+          labels: weekdayEntry.labels,
+          occurrence,
+        };
+      }
+    }
+  }
+
+  for (const weekdayEntry of weekdayEntries) {
+    const labelPattern = weekdayEntry.labels
+      .map((label) => `${escapeRegExp(label)}(?:-feira)?`)
+      .join("|");
+
+    if (new RegExp(`\\b(?:${labelPattern})\\b`).test(normalizedText)) {
+      return weekdayEntry;
+    }
+  }
+
+  return undefined;
+}
+
+function pickDateForOccurrence(
+  availableDates: string[],
+  occurrence?: WeekdayOccurrence,
+): string | undefined {
+  if (!occurrence) {
+    return undefined;
+  }
+
+  if (occurrence === "last") {
+    return availableDates.at(-1);
+  }
+
+  return availableDates[occurrence - 1];
+}
+
+function nextWeekday(
+  weekday: number,
+  options: { allowToday?: boolean; forceNextWeek?: boolean } = {},
+): string {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const candidate = new Date(today);
@@ -398,10 +704,9 @@ function nextWeekday(weekday: number, isNextWeek?: boolean): string {
     candidate.setDate(candidate.getDate() + 1);
   }
 
-  if (candidate.getTime() === today.getTime()) {
+  if (candidate.getTime() === today.getTime() && !options.allowToday) {
     candidate.setDate(candidate.getDate() + 7);
-  } else if (isNextWeek) {
-    // Add another week if "proxima" was detected
+  } else if (options.forceNextWeek) {
     candidate.setDate(candidate.getDate() + 7);
   }
 
@@ -410,54 +715,84 @@ function nextWeekday(weekday: number, isNextWeek?: boolean): string {
 
 export function parsePreference(text: string): {
   date?: string;
+  startDate?: string;
+  endDate?: string;
+  weekday?: number;
+  weekdayOccurrence?: WeekdayOccurrence;
   exactTime?: string;
   period?: Period;
+  timeWindow?: ApproximateTimeWindow;
   weekendRequested?: boolean;
 } {
-  const normalizedText = normalize(text);
+  const normalizedText = compactPreferenceText(normalize(text));
   let date: string | undefined;
+  let startDate: string | undefined;
+  let endDate: string | undefined;
+  let weekday: number | undefined;
+  let weekdayOccurrence: WeekdayOccurrence | undefined;
   let period: Period | undefined;
   let exactTime: string | undefined;
   let weekendRequested = false;
+  const monthWindow = detectMonthWindow(normalizedText);
+
+  if (monthWindow) {
+    startDate = monthWindow.startDate;
+    endDate = monthWindow.endDate;
+  }
 
   // Handle "depois de amanha" (day after tomorrow)
-  if (normalizedText.includes("depois de amanha")) {
+  if (
+    normalizedText.includes("depois de amanha") ||
+    normalizedText.includes("pasado manana")
+  ) {
     const dayAfterTomorrow = new Date();
     dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
     date = toDateKey(dayAfterTomorrow);
-  }
-
-  if (normalizedText.includes("amanha")) {
+  } else if (
+    normalizedText.includes("amanha") ||
+    normalizedText.includes("manana")
+  ) {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     date = toDateKey(tomorrow);
   }
 
-  if (normalizedText.includes("hoje")) {
+  if (normalizedText.includes("hoje") || normalizedText.includes("hoy")) {
     date = toDateKey(new Date());
   }
 
-  const weekdays: Record<string, number> = {
-    segunda: 1,
-    terca: 2,
-    terça: 2,
-    quarta: 3,
-    quinta: 4,
-    sexta: 5,
-  };
-
   const weekendDays: Record<string, number> = {
     sabado: 6,
-    sábado: 6,
     domingo: 0,
   };
 
-  for (const [label, weekday] of Object.entries(weekdays)) {
-    if (normalizedText.includes(label)) {
-      // Handle "proxima segunda", "proxima terça", etc.
-      const isNextWeek = normalizedText.includes("proxima");
-      date = nextWeekday(weekday, isNextWeek);
-      break;
+  const weekdayMatch = matchWeekdayPreference(normalizedText);
+  if (weekdayMatch) {
+    const refersToCurrentWeek = weekdayMatch.labels.some((label) =>
+      [
+        `este ${label}`,
+        `esta ${label}`,
+        `esse ${label}`,
+        `essa ${label}`,
+      ].some((term) => normalizedText.includes(term)),
+    );
+    const refersToNextWeek = weekdayMatch.labels.some((label) =>
+      [
+        `proxima ${label}`,
+        `proximo ${label}`,
+        `siguiente ${label}`,
+        `next ${label}`,
+      ].some((term) => normalizedText.includes(term)),
+    );
+
+    if (startDate && endDate) {
+      weekday = weekdayMatch.weekday;
+      weekdayOccurrence = weekdayMatch.occurrence;
+    } else {
+      date = nextWeekday(weekdayMatch.weekday, {
+        allowToday: refersToCurrentWeek || !refersToNextWeek,
+        forceNextWeek: refersToNextWeek,
+      });
     }
   }
 
@@ -472,10 +807,15 @@ export function parsePreference(text: string): {
   }
 
   // Check for "fim de semana" (weekend)
-  if (normalizedText.includes("fim de semana")) {
+  if (
+    normalizedText.includes("fim de semana") ||
+    normalizedText.includes("fin de semana")
+  ) {
     weekendRequested = true;
     date = nextWeekday(5); // Suggest Friday
   }
+
+  const timeWindow = detectApproximateTimeWindow(normalizedText);
 
   const slashDate = text.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?\b/);
   if (slashDate) {
@@ -483,11 +823,19 @@ export function parsePreference(text: string): {
     const month = Number(slashDate[2]);
     const year = Number(slashDate[3] ?? new Date().getFullYear());
     date = toDateKey(new Date(year, month - 1, day));
+    startDate = undefined;
+    endDate = undefined;
+    weekday = undefined;
+    weekdayOccurrence = undefined;
   }
 
   const isoDate = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (isoDate) {
     date = `${isoDate[1]}-${isoDate[2]}-${isoDate[3]}`;
+    startDate = undefined;
+    endDate = undefined;
+    weekday = undefined;
+    weekdayOccurrence = undefined;
   }
 
   if (normalizedText.includes("manha") || normalizedText.includes("cedo")) {
@@ -529,7 +877,17 @@ export function parsePreference(text: string): {
     }
   }
 
-  return { date, exactTime, period, weekendRequested };
+  return {
+    date,
+    startDate,
+    endDate,
+    weekday,
+    weekdayOccurrence,
+    exactTime,
+    period,
+    timeWindow,
+    weekendRequested,
+  };
 }
 
 function fitsPeriod(slot: SuggestedSlot, period?: Period): boolean {
@@ -548,6 +906,21 @@ function fitsPeriod(slot: SuggestedSlot, period?: Period): boolean {
   }
 
   return hour >= 17;
+}
+
+function fitsTimeWindow(
+  slot: SuggestedSlot,
+  timeWindow?: ApproximateTimeWindow,
+): boolean {
+  if (!timeWindow) {
+    return true;
+  }
+
+  const slotMinutes = timeToMinutes(slot.time);
+  return (
+    slotMinutes >= timeToMinutes(timeWindow.start) &&
+    slotMinutes <= timeToMinutes(timeWindow.end)
+  );
 }
 
 function buildFallbackSlots(recommendation: ChatRecommendation): SuggestedSlot[] {
@@ -596,14 +969,39 @@ export function buildSlotOptions(
     doctorId: recommendation.doctorId,
     serviceId: recommendation.serviceId,
     limit: 8,
-    startDate: preference.date,
+    startDate: preference.date ?? preference.startDate,
+    endDate: preference.endDate,
   });
 
   if (preference.date) {
     slots = slots.filter((slot) => slot.date === preference.date);
   }
 
+  if (preference.weekday !== undefined && !preference.date) {
+    slots = slots.filter((slot) => getWeekday(slot.date) === preference.weekday);
+  }
+
+  if (
+    preference.startDate &&
+    preference.endDate &&
+    preference.weekday !== undefined &&
+    preference.weekdayOccurrence
+  ) {
+    const uniqueDates = [...new Set(slots.map((slot) => slot.date))];
+    const targetedDate = pickDateForOccurrence(
+      uniqueDates,
+      preference.weekdayOccurrence,
+    );
+    slots = targetedDate
+      ? slots.filter((slot) => slot.date === targetedDate)
+      : [];
+  }
+
   slots = slots.filter((slot) => fitsPeriod(slot, preference.period));
+
+  if (preference.timeWindow && !preference.exactTime) {
+    slots = slots.filter((slot) => fitsTimeWindow(slot, preference.timeWindow));
+  }
 
   if (preference.exactTime) {
     slots = slots.filter((slot) => slot.time === preference.exactTime);
@@ -617,10 +1015,28 @@ export function buildSlotOptions(
 
   let note: string | undefined;
 
-  if (!matchedRequestedPreference) {
+  if (preference.weekendRequested) {
+    note = "Não temos sábado ou domingo, mas separei horários para sexta-feira que é o dia mais próximo!";
+  } else if (!matchedRequestedPreference) {
     if (preference.date && preference.period && preference.exactTime) {
       note =
         "Nesse horário e período eu não consegui te encaixar, mas separei alternativas próximas.";
+    } else if (
+      preference.startDate &&
+      preference.endDate &&
+      preference.weekday !== undefined &&
+      preference.weekdayOccurrence
+    ) {
+      note =
+        "Nesse dia específico dentro do mês eu não achei vaga, mas já separei algumas alternativas próximas.";
+    } else if (preference.startDate && preference.endDate && preference.weekday !== undefined) {
+      note =
+        "Nesse dia da semana dentro desse período eu não achei vaga, mas já separei outras opções próximas.";
+    } else if (preference.date && preference.timeWindow) {
+      note = `Nessa faixa ${preference.timeWindow.label} eu não achei vaga nesse dia, mas já separei opções próximas.`;
+    } else if (preference.startDate && preference.endDate) {
+      note =
+        "Nesse período eu não achei vaga do jeito pedido, mas já separei algumas alternativas próximas.";
     } else if (preference.date && preference.period) {
       note =
         "Nesse período eu não achei vaga nesse dia, mas já puxei outras opções para você.";
@@ -632,6 +1048,8 @@ export function buildSlotOptions(
         "Nesse dia específico eu não achei um horário bom, mas já trouxe outras opções.";
     } else if (preference.exactTime) {
       note = `Às ${preference.exactTime} eu não achei vaga agora, mas já separei horários próximos.`;
+    } else if (preference.timeWindow) {
+      note = `Nessa faixa ${preference.timeWindow.label} eu não achei vaga agora, mas já separei horários próximos.`;
     } else if (preference.period) {
       note = "Nesse período eu não achei vaga agora, mas já separei outros horários.";
     }

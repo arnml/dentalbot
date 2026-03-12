@@ -24,6 +24,7 @@ import {
 } from "@/lib/types";
 
 const SLOT_STEP_MINUTES = 30;
+const SUGGESTION_SEARCH_DAYS = 60;
 
 function getWindowForDate(
   doctor: Doctor,
@@ -123,6 +124,7 @@ export function getSuggestedSlots({
   serviceId,
   limit = 6,
   startDate,
+  endDate,
   requestedTime,
   excludeRequested = false,
 }: {
@@ -130,13 +132,15 @@ export function getSuggestedSlots({
   serviceId: ServiceId;
   limit?: number;
   startDate?: string;
+  endDate?: string;
   requestedTime?: string;
   excludeRequested?: boolean;
 }): SuggestedSlot[] {
   const targetDoctors = doctorId ? [getDoctorById(doctorId)] : doctors;
   const service = getServiceById(serviceId);
-  const dates = listUpcomingDates(14).filter(
-    (date) => !startDate || date >= startDate,
+  const dates = listUpcomingDates(SUGGESTION_SEARCH_DAYS).filter(
+    (date) =>
+      (!startDate || date >= startDate) && (!endDate || date <= endDate),
   );
   const suggestions: SuggestedSlot[] = [];
 
